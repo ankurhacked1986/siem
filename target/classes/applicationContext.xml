@@ -1,0 +1,69 @@
+<beans xmlns="http://www.springframework.org/schema/beans"
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:camel="http://camel.apache.org/schema/spring"
+	xsi:schemaLocation="http://www.springframework.org/schema/beans 
+		http://www.springframework.org/schema/beans/spring-beans.xsd          
+		http://camel.apache.org/schema/spring 
+		http://camel.apache.org/schema/spring/camel-spring.xsd">
+<bean id="Logging" class="siem.Logging"/>
+<bean id="SiemPostProcessor" class="siem.SiemPostProcessor"/>
+<bean id="SiemUpdate" class="siem.SiemUpdate"/>
+<bean id="PostLogging" class="siem.PostLogging"/>
+<bean id="dataSource" class="org.apache.commons.dbcp.BasicDataSource"
+		destroy-method="close">
+        <!-- <property name="driverClassName" value="org.postgresql.Driver"/> -->
+        <property name="driverClassName" value="com.mysql.jdbc.Driver"/>
+        <property name="url" value="jdbc:mysql://172.17.81.209:3306/integration_third_party"/>
+        <property name="username" value="root" />
+        <property name="password" value="mito" />
+</bean>
+ <bean id="sqlComponent" class="org.apache.camel.component.sql.SqlComponent">
+		<property name="dataSource" ref="dataSource" />
+</bean>
+		<camelContext xmlns="http://camel.apache.org/schema/spring">
+		<propertyPlaceholder id="placeholder" location="classpath:sql.properties" />		
+		<camel:route>
+			<from uri="timer://timer1?period=15s" />
+			<to uri="sqlComponent:{{sql.selectSiem}}?consumer.useIterator=true" />
+			<camel:split>
+			<camel:simple>${body}</camel:simple>
+			<process ref="Logging"/>
+			<setHeader headerName="CamelHttpMethod">
+    			 	<constant>POST</constant>
+			</setHeader>
+			<setHeader headerName="Content-Type">
+                    <constant>application/json</constant>
+            </setHeader>
+            <to uri="http4://172.17.81.209:6090/mito-services/rest/mitoservice/hprequest/new?Exchange.CONTENT_TYPE=application/json"/>
+            <process ref="SiemPostProcessor"/>
+            <camel:choice>
+				 	<camel:when>
+				 		<camel:simple>
+				 		${header.success_code} == "true"
+				 		</camel:simple>
+            			<to uri="sqlComponent:update integration_third_party.siem_mito_integration set updated ='N',mito_incident_id=:#mito_incident_id where id=:#siem_occurence_id" />
+            			</camel:when>
+            			</camel:choice>
+			</camel:split>
+		</camel:route>
+		
+		<!-- Camel Route for Updating the status of ticket -->
+		
+		<camel:route>
+			<from uri="timer://timer1?period=15s" />
+			<to uri="sqlComponent:{{sql.updateSiem}}?consumer.useIterator=true" />
+			<camel:split>
+			<camel:simple>${body}</camel:simple>
+			<process ref="SiemUpdate"/>
+			<setHeader headerName="CamelHttpMethod">
+    		<constant>GET</constant>
+    		</setHeader>
+    		<setHeader  headerName="CamelHttpUri">
+			<simple>http://172.17.81.209:6090/mito-services/rest/mitoservice/hpticket/setstatus/${header.mito_inc}/CLOSED/superuser</simple>
+			</setHeader>
+			<to uri="http://dummyhost" />	
+			<process ref="PostLogging" />
+			<to uri="sqlComponent:update integration_third_party.siem_mito_integration set updated ='N' where mito_incident_id=:#mito_inc" />
+			</camel:split>
+		</camel:route>
+		</camelContext>
+</beans>
